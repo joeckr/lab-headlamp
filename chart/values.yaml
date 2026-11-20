@@ -1,26 +1,31 @@
 app:
-  name: lab-service
-  image: nginxinc/nginx-unprivileged
-  tag: alpine
-  pullPolicy: Always
+  name: headlamp
+  image: ghcr.io/headlamp-k8s/headlamp
+  tag: v0.46.0
+  pullPolicy: IfNotPresent
   replicaCount: 1
-  port: 8080
-  env: "lab"
+  port: 4466
   resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
     limits:
       cpu: 250m
       memory: 256Mi
   securityContext:
     allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: false
+    readOnlyRootFilesystem: true
     capabilities:
       drop:
         - ALL
   podSecurityContext:
     runAsNonRoot: true
+    runAsUser: 100
+    runAsGroup: 101
+    fsGroup: 101
+    fsGroupChangePolicy: OnRootMismatch
     seccompProfile:
       type: RuntimeDefault
-    fsGroup: 1031
   tolerations:
     - key: "node-role.kubernetes.io/control-plane"
       operator: "Exists"
@@ -29,15 +34,91 @@ app:
       operator: "Exists"
       effect: "NoSchedule"
 
-service:
-  name: lab-service
-  type: ClusterIP
-  port: 8080
+config:
+  # Run Headlamp in in-cluster mode to discover the local Kubernetes API server.
+  inCluster: true
+  # Directory where Headlamp loads frontend plugins (backed by the Longhorn PVC when persistence is enabled).
+  pluginsDir: /headlamp/plugins
+  # Additional CLI arguments passed to the headlamp-server binary.
+  extraArgs: []
 
-ingress:
+# Zitadel OIDC configuration.
+# Do NOT commit secrets to this repository. Supply clientID, clientSecret, and issuerURL
+# at install time via --set, an untracked values.local.yaml file, or an existing Kubernetes Secret.
+oidc:
   enabled: true
-  name: lab-ingress
-  host: "test.joeckr.dev" # add your own domain
-  className: "nginx"
+  # Zitadel issuer URL (e.g., https://auth.joeckr.dev). Pass at install time.
+  issuerURL: ""
+  # OIDC Client ID from Zitadel. Pass at install time or via existingSecret.
+  clientID: ""
+  # OIDC Client Secret from Zitadel (optional when using PKCE with a public client).
+  clientSecret: ""
+  # OIDC scopes requested from Zitadel (includes project roles scope for Zitadel grants/actions).
+  scopes: "openid,profile,email,urn:zitadel:iam:org:project:roles"
+  # Explicit callback URL so TLS termination at Cloudflare Tunnel / Traefik never produces an http:// redirect.
+  callbackURL: "https://headlamp.joeckr.dev/oidc-callback"
+  # Enable PKCE (Proof Key for Code Exchange), recommended for Zitadel.
+  usePKCE: true
+  # Store auth token in secure cookies instead of browser localStorage.
+  useCookie: false
+  # Name of a pre-existing Kubernetes Secret containing OIDC credentials.
+  # When set, the chart will not create a Secret resource.
+  existingSecret: ""
+  secretKeys:
+    clientID: clientID
+    clientSecret: clientSecret
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # Required for -in-cluster mode so Headlamp can read the cluster CA cert and API server endpoint.
+  # User requests are still authenticated with each user's Zitadel OIDC token, not the SA token.
+  automountServiceAccountToken: true
+
+rbac:
+  # Optional ClusterRoleBinding for the Headlamp ServiceAccount (disabled by default for least privilege).
+  serviceAccountBinding:
+    create: false
+    clusterRoleName: view
+  # Optional ClusterRoleBindings for Zitadel OIDC users or groups.
+  # Example:
+  #   oidcBindings:
+  #     - name: headlamp-oidc-admins
+  #       clusterRoleName: cluster-admin
+  #       subjects:
+  #         - kind: Group
+  #           name: "oidc:k8s-admins"
+  oidcBindings: []
+
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClassName: longhorn
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+service:
+  name: ""
+  type: ClusterIP
+  port: 80
+
+# Kubernetes Gateway API HTTPRoute for Traefik (fronted by Cloudflare Tunnel).
+httpRoute:
+  enabled: true
+  name: ""
+  annotations: {}
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: traefik-gateway
+      namespace: gateway
+      sectionName: web
+  hostnames:
+    - "headlamp.joeckr.dev"
   path: /
-  pathType: "Prefix"
+  pathType: PathPrefix
+  # Optional Gateway API HTTPRoute filters (e.g., RequestHeaderModifier if needed).
+  filters: []

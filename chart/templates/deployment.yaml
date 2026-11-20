@@ -1,19 +1,29 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Values.app.name }}
+  name: {{ include "lab-headlamp.name" . }}
   labels:
-    app: {{ .Values.app.name }}
+    {{- include "lab-headlamp.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.app.replicaCount }}
+  {{- if .Values.persistence.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
-      app: {{ .Values.app.name }}
+      {{- include "lab-headlamp.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: {{ .Values.app.name }}
+        {{- include "lab-headlamp.selectorLabels" . | nindent 8 }}
+      {{- if and .Values.oidc.enabled (not .Values.oidc.existingSecret) }}
+      annotations:
+        checksum/oidc-secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+      {{- end }}
     spec:
+      serviceAccountName: {{ include "lab-headlamp.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
       {{- with .Values.app.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -22,22 +32,93 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      automountServiceAccountToken: false
       containers:
-        - name: {{ .Values.app.name }}
+        - name: {{ include "lab-headlamp.name" . }}
           image: "{{ .Values.app.image }}:{{ .Values.app.tag }}"
           imagePullPolicy: {{ .Values.app.pullPolicy }}
           {{- with .Values.app.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          args:
+            {{- if .Values.config.inCluster }}
+            - "-in-cluster"
+            {{- end }}
+            {{- if .Values.config.pluginsDir }}
+            - "-plugins-dir={{ .Values.config.pluginsDir }}"
+            {{- end }}
+            {{- if .Values.oidc.enabled }}
+            {{- if .Values.oidc.issuerURL }}
+            - "-oidc-idp-issuer-url={{ .Values.oidc.issuerURL }}"
+            {{- end }}
+            {{- if .Values.oidc.scopes }}
+            - "-oidc-scopes={{ .Values.oidc.scopes }}"
+            {{- end }}
+            {{- if .Values.oidc.callbackURL }}
+            - "-oidc-callback-url={{ .Values.oidc.callbackURL }}"
+            {{- end }}
+            {{- if .Values.oidc.usePKCE }}
+            - "-oidc-use-pkce"
+            {{- end }}
+            {{- if .Values.oidc.useCookie }}
+            - "-oidc-use-cookie"
+            {{- end }}
+            {{- end }}
+            {{- range .Values.config.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- if .Values.oidc.enabled }}
+          env:
+            - name: HEADLAMP_CONFIG_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lab-headlamp.oidcSecretName" . }}
+                  key: {{ .Values.oidc.secretKeys.clientID }}
+            - name: HEADLAMP_CONFIG_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lab-headlamp.oidcSecretName" . }}
+                  key: {{ .Values.oidc.secretKeys.clientSecret }}
+                  optional: true
+          {{- end }}
           ports:
             - containerPort: {{ .Values.app.port }}
-              name: {{ .Values.app.name }}
-          env:
-            - name: ENV
-              value: {{ .Values.app.env | quote }}
+              name: http
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: headlamp-config
+              mountPath: /home/headlamp/.config
+            {{- if .Values.persistence.enabled }}
+            - name: plugins
+              mountPath: {{ .Values.config.pluginsDir | default "/headlamp/plugins" }}
+            {{- end }}
           {{- with .Values.app.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: headlamp-config
+          emptyDir: {}
+        {{- if .Values.persistence.enabled }}
+        - name: plugins
+          persistentVolumeClaim:
+            claimName: {{ include "lab-headlamp.pvcName" . }}
+        {{- end }}
