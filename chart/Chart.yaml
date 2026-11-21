@@ -1,6 +1,6 @@
 apiVersion: v2
-name: lab-service
-description: Helm chart for experimenting with new services in a lab environment
+name: lab-headlamp
+description: Helm chart for deploying Headlamp Kubernetes Web UI with Restricted PSS, Traefik Gateway API, Longhorn PVC, and Zitadel OIDC
 type: application
-version: 0.2.1
-appVersion: "0.2.1"
+version: 0.1.0
+appVersion: "0.1.0"

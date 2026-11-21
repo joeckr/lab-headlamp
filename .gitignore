@@ -25,5 +25,8 @@ Thumbs.db
 *.log
 .discovered_charts.txt
 
-# Helm charts
+# Helm charts & local secret values
 rendered.yaml
+values.local.yaml
+secrets.yaml
+*.secret.yaml

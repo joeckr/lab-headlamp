@@ -1,31 +1,32 @@
-# skeleton-lab-service
+# lab-headlamp
 
-A starter skeleton repository tailored for rapid experimentation, prototyping, and testing of services in a lab environment (local container runtimes and Kubernetes).
+Helm chart and local lab environment for deploying [Headlamp](https://headlamp.dev/) (Kubernetes Web UI) into a homelab Kubernetes cluster with:
 
-> **Note**: This repository intentionally **does NOT include a Dockerfile**. If a custom image build is required, use an OCI image repository (such as `skeleton-oci-modified`). Lab repositories focus on configuring, deploying, and testing upstream or pre-built container services.
+- **Restricted Pod Security Standards (PSS)** compliance (`runAsNonRoot`, `readOnlyRootFilesystem`, `RuntimeDefault` seccomp, `ALL` capabilities dropped)
+- **Traefik Kubernetes Gateway API** (`HTTPRoute`) fronted by a **Cloudflare Tunnel** at `https://headlamp.joeckr.dev`
+- **Longhorn** persistent storage (`PersistentVolumeClaim`) for Headlamp plugins
+- **Zitadel OIDC** authentication with zero secrets committed to git (supplied at `helm install` time or via an existing Kubernetes `Secret`)
 
 ---
 
-## Features
+## Architecture
 
-- **Helm Chart (`chart/`)**:
-  - Out-of-the-box support for deploying services to Kubernetes.
-  - Parameterized upstream container image (`image:tag`), replica count, and ports.
-  - Standard Kubernetes Ingress support (`networking.k8s.io/v1`).
-  - Secure defaults: non-root execution (`runAsNonRoot: true`), `RuntimeDefault` seccomp profile, and dropping `ALL` capabilities.
-  - Master and control-plane node tolerations for compact lab clusters.
-- **Compose (`compose.yml`)**:
-  - Spin up and test the lab service locally in seconds without requiring a cluster.
-  - Pre-configured with port forwarding, and healthchecks.
-- **Environment & Tooling (`mise` & `hk`)**:
-  - `mise.toml`: Tool version management (`helm`, `betterleaks`, `addlicense`, `trivy`, `actionlint`, `shellcheck`, `zizmor`, `hk`, `pkl`, `tombi`, `yamllint`) and convenient task aliases.
-  - `hk.pkl`: Fast git hooks and project checks enforcing Conventional Commits, branch protection, secret scanning (`betterleaks`), Helm linting, workflow linting (`actionlint`), security audits (`zizmor`), YAML linting (`yamllint`), TOML linting (`tombi`), shell checking (`shellcheck`), and license checks (`addlicense`).
-- **GitHub Actions CI (`.github/workflows/`)**:
-  - Reusable workflows powered by [`joeckr/ci-templates`](https://github.com/joeckr/ci-templates):
-    - `lint.yml`: Lints GitHub Actions workflow syntax (`actionlint`), Conventional Commits (`commitlint`), and shell scripts (`shellcheck`).
-    - `security.yml`: Scans commits and PRs for secret leaks (`betterleaks`) and workflow security audits (`zizmor`).
-    - `release.yml`: Automated Semantic Versioning, git tagging, release notes, `Chart.yaml` version syncing (`semantic`), and packaging/publishing Helm charts to GitHub Container Registry (GHCR) as OCI artifacts.
-    - `test_release.yml`: PR dry-run preview for Semantic Versioning and Helm chart packaging.
+```text
+Browser (https://headlamp.joeckr.dev)
+  │
+  ▼
+Cloudflare Edge / Cloudflare Tunnel (cloudflared)
+  │
+  ▼
+Traefik Kubernetes Gateway (gateway/traefik-gateway)
+  │  HTTPRoute (gateway.networking.k8s.io/v1)
+  ▼
+Headlamp Service (ClusterIP :80 -> :4466)
+  │
+  ├──▶ Zitadel OIDC (https://<your-zitadel>/oidc-callback auth flow)
+  ├──▶ Kubernetes API Server (in-cluster, user OIDC Bearer token)
+  └──▶ Longhorn PVC (/headlamp/plugins)
+```
 
 ---
 
@@ -33,293 +34,273 @@ A starter skeleton repository tailored for rapid experimentation, prototyping, a
 
 ```text
 .
-├── .github/
-│   └── workflows/
-│       ├── lint.yml             # Lints workflows, commits, and shell scripts
-│       ├── security.yml         # Scans for secrets and audits workflow security
-│       ├── release.yml          # Semantic release and Helm chart publishing to GHCR
-│       └── test_release.yml     # PR dry-run test for releases and chart packaging
+├── .github/workflows/
+│   ├── lint.yml                 # Lints workflows, commits, and shell scripts
+│   ├── security.yml             # Secret scanning (betterleaks) and workflow audits (zizmor)
+│   ├── release.yml              # Semantic release and OCI Helm chart publishing to GHCR
+│   └── test_release.yml         # PR dry-run test for releases and chart packaging
 ├── chart/
-│   ├── Chart.yaml               # Helm chart definition
-│   ├── values.yaml              # Default configuration values
+│   ├── Chart.yaml               # Helm chart metadata
+│   ├── values.yaml              # Default configuration values (secret-free)
 │   ├── .helmignore              # Ignore rules for chart packaging
 │   └── templates/
-│       ├── deployment.yaml      # Workload deployment
-│       ├── service.yaml         # Kubernetes Service
-│       └── ingress.yaml         # Kubernetes Ingress
-├── scripts/
-│   └── template.sh              # Helper script placeholder
-├── compose.yml                  # Local lab service definition
-├── hk.pkl                       # hk git hooks and checks configuration
-├── mise.toml                    # Mise tools and tasks
+│       ├── _helpers.tpl         # Shared template helpers
+│       ├── deployment.yaml      # Hardened Headlamp Deployment
+│       ├── httproute.yaml       # Gateway API HTTPRoute for Traefik
+│       ├── pvc.yaml             # Longhorn PersistentVolumeClaim for plugins
+│       ├── rbac.yaml            # Optional ClusterRoleBindings for SA / OIDC subjects
+│       ├── secret.yaml          # OIDC credentials Secret (populated at install time)
+│       ├── service.yaml         # ClusterIP Service (:80 -> :4466)
+│       └── serviceaccount.yaml  # Dedicated ServiceAccount
+├── compose.yml                  # Local container testing via Podman Compose
+├── hk.pkl                       # Git hooks and linting checks
+├── mise.toml                    # Tool versions and task runner
 └── README.md
 ```
 
 ---
 
-## Security & Hardened Image Architecture
+## Security & Restricted PSS Compliance
 
-Modern hardened Kubernetes environments prioritize workload security and least privilege by enforcing strict runtime constraints. This repository is architected to produce rootless, hardened container images that run out-of-the-box under restricted security standards without requiring root privileges.
+This chart is hardened to run out of the box in namespaces enforcing the Kubernetes **Pod Security Admission (PSA)** `restricted` profile:
 
-### Hardened Container Standards (Kubernetes PSS `restricted`)
-
-Under the Kubernetes **Pod Security Admission (PSA)** `restricted` profile and modern hardened container runtimes:
-- **Must Run As Non-Root**: The pod specification sets `securityContext.runAsNonRoot: true` with a dedicated non-root UID (`USER 1031` or dynamic non-root UID). Containers cannot execute as UID 0.
-- **Arbitrary Dynamic UIDs**: Workload environments may assign dynamic arbitrary non-root UIDs. Files and directories required at runtime are configured with group 0 permissions (`chgrp -R 0` and `chmod -R g+rwX`) so any non-root UID can execute and access required assets.
-- **Drop All Capabilities**: The container specification explicitly drops all Linux capabilities (`capabilities.drop: ["ALL"]`).
-- **Disallow Privilege Escalation**: Pods enforce `securityContext.allowPrivilegeEscalation: false` to prevent child processes from acquiring additional privileges.
-- **RuntimeDefault Seccomp**: Workloads enforce `seccompProfile: { type: RuntimeDefault }` to restrict syscalls to safe defaults.
-- **Credential Protection**: Hardened with `automountServiceAccountToken: false` to avoid leaking Kubernetes API tokens to application containers unless explicitly needed.
-- **Unprivileged Ports**: Containers listen on non-privileged ports (> 1024).
-- **Standard Ingress & Storage**: Uses standard Kubernetes `networking.k8s.io/v1` `Ingress` and standard CSI PersistentVolumeClaims.
-
-### Compliance Matrix
-
-| Security Dimension | Restricted Standard Requirement | Implementation in This Repo |
+| Security Dimension | Restricted PSS Requirement | Implementation in This Chart |
 |---|---|---|
-| **Workload Execution** | Non-root UID (`runAsNonRoot: true`) | Unprivileged container image (`nginx-unprivileged`) + `runAsNonRoot: true` |
-| **Group Permissions** | GID 0 (`root` group) with `g+rwX` | Configured for arbitrary UIDs and group 0 compatibility |
-| **Capabilities** | Must drop `ALL` capabilities | `capabilities.drop: ["ALL"]` in Helm chart |
-| **Privilege Escalation** | Prohibited (`allowPrivilegeEscalation: false`) | Configured in Helm `securityContext` |
+| **Non-Root Execution** | `runAsNonRoot: true`, UID > 0 | `runAsNonRoot: true`, `runAsUser: 100`, `runAsGroup: 101`, `fsGroup: 101` |
+| **Capabilities** | Must drop `ALL` capabilities | `capabilities.drop: ["ALL"]` |
+| **Privilege Escalation** | `allowPrivilegeEscalation: false` | Enforced on the Headlamp container |
+| **Read-Only Root FS** | Immutable container filesystem | `readOnlyRootFilesystem: true` with `emptyDir` mounts at `/tmp` and `/home/headlamp/.config` |
 | **Seccomp Profile** | `RuntimeDefault` or `Localhost` | `seccompProfile: { type: RuntimeDefault }` |
-| **Service Account Token** | Disabled unless required | `automountServiceAccountToken: false` in pod spec |
-| **Port Binding** | Unprivileged (> 1024) | Listens on port `8080` |
-| **Ingress Layer** | Standard Kubernetes Ingress | Kubernetes Ingress (`networking.k8s.io/v1`) |
----
+| **Unprivileged Port** | Container port > 1024 | Listens on TCP port `4466` |
+| **Least-Privilege RBAC** | No default cluster-admin on pod SA | `rbac.serviceAccountBinding.create: false` by default; API calls use the logged-in user's OIDC token |
+| **Secret Hygiene** | No secrets in Git | OIDC credentials injected from Kubernetes `Secret` via env vars (`HEADLAMP_CONFIG_OIDC_*`) |
 
-## Local Environment & Podman Setup
-
-To ensure containerized applications and Helm charts tested locally run cleanly when deployed to hardened Kubernetes environments, this repository is designed to be used alongside the Podman configuration in [joeckr/dotfiles](https://github.com/joeckr/dotfiles).
-
-The dotfiles repository provides a centralized [`containers.conf`](https://github.com/joeckr/dotfiles/blob/main/containers/containers.conf) (deployed to `~/.config/containers/containers.conf`) that configures Podman to enforce rootless and hardened container runtime restrictions in testing:
-
-| Security Rule | Podman Configuration | Description |
-|---|---|---|
-| **Random UID (`MustRunAsRange`)** | `userns = "auto"` | Allocates dynamic subordinate UID/GID ranges from `/etc/subuid` and `/etc/subgid`. Containers run unprivileged without mapping host root. |
-| **Drop Capabilities** | `default_capabilities = ["NET_BIND_SERVICE"]` | Drops standard root capabilities (`CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID`, `SETGID`, `SYS_CHROOT`, etc.) and permits only `NET_BIND_SERVICE`. |
-| **Disallow Privileged** | `privileged = false` | Disallows privileged container execution by default. |
-| **Seccomp Profile** | `seccomp_profile = "/usr/share/containers/seccomp.json"` | Enforces the runtime default seccomp profile (`RuntimeDefault`). |
-| **Namespace Isolation** | `cgroupns`, `ipcns`, `pidns`, `utsns = "private"` | Enforces private container namespaces (host namespaces are forbidden in restricted profiles). |
-
-### macOS Podman Machine Integration
-
-On macOS, the dotfiles installer script (`brew/podman.sh`) automates the machine lifecycle:
-
-1. Deploys `containers/containers.conf` to `~/.config/containers/containers.conf` on the host.
-2. Initializing `podman machine init` automatically mounts `~/.config/containers` into `/etc/containers` inside the Fedora CoreOS VM.
-3. Automatically symlinks `/etc/containers/containers.conf` to the VM user's config (`~core/.config/containers/containers.conf`) and restarts the Podman API service so all container executions immediately enforce these constraints.
+> [!NOTE]
+> `serviceAccount.automountServiceAccountToken` is `true` because Headlamp's `-in-cluster` mode reads the cluster CA certificate and API server endpoint from `/var/run/secrets/kubernetes.io/serviceaccount`. Because no `ClusterRoleBinding` is attached to the ServiceAccount by default, the pod itself has no cluster privileges — Kubernetes API authorization is evaluated per-user via Zitadel OIDC tokens.
 
 ---
 
-## Testing & Validation Process
+## Prerequisites
 
-This repository defines a 3-tier testing process to validate container security, manifest generation, and runtime compatibility from local development through to production cluster deployment.
+### 1. Restricted Namespace
 
-```
-┌─────────────────────────┐     ┌─────────────────────────┐     ┌─────────────────────────┐
-│ Tier 1: Local Container │ ──> │ Tier 2: Podman Play     │ ──> │ Tier 3: K8s Cluster     │
-│ Fast local prototyping  │     │ Validate K8s manifests  │     │ Live Helm verification  │
-│ (compose.yml)           │     │ (podman play kube)      │     │ (helm install)          │
-└─────────────────────────┘     └─────────────────────────┘     └─────────────────────────┘
-```
-
-### Tier 1: Local Container Validation (`compose.yml`)
-
-The [`compose.yml`](compose.yml) configuration runs the service container locally using Podman Compose:
+Ensure the target namespace enforces the `restricted` Pod Security Standard:
 
 ```sh
-# Start container in detached mode
+kubectl create namespace headlamp
+kubectl label namespace headlamp \
+  pod-security.kubernetes.io/enforce=restricted \
+  pod-security.kubernetes.io/enforce-version=latest
+```
+
+### 2. Zitadel OIDC Application & Action
+
+In your **Zitadel Console** (`https://zitadel.joeckr.dev`), inside your main Organization:
+
+1. **Create a Project** (e.g., `Kubernetes` / `Infrastructure`):
+   - Under **General** (project settings), enable **Assert Roles on Authentication** (required so Zitadel loads project grants during login).
+   - Under **Roles**, define your Kubernetes RBAC roles (e.g., `headlamp-view`, `headlamp-edit`, `headlamp-admin`).
+   - Under **Role Assignments**, assign the appropriate role(s) to your user(s).
+2. **Create a `groupsClaim` Action** (flattens Zitadel's nested `urn:zitadel:iam:org:project:roles` map into a standard `groups` array for `kube-apiserver`):
+   - Go to **Actions** → **Scripts** → **+ New**, name it `groupsClaim`:
+     ```javascript
+     function groupsClaim(ctx, api) {
+       if (ctx.v1.user.grants === undefined || ctx.v1.user.grants.count == 0) {
+         return;
+       }
+       let grants = [];
+       ctx.v1.user.grants.grants.forEach(claim => {
+         claim.roles.forEach(role => {
+           grants.push(role);
+         });
+       });
+       api.v1.claims.setClaim('groups', grants);
+     }
+     ```
+   - Switch **Flow Type** to **Complement Token**, and attach `groupsClaim` to **Pre Userinfo creation** and **Pre access token creation**.
+3. **Create the Headlamp Application** inside that Project:
+   - **Application Type**: `Web`
+   - **Authentication Method**: `PKCE` (no client secret needed; matches `oidc.usePKCE: true`), or `Basic`/`POST` if you prefer a client secret.
+   - **Redirect URI**: `https://headlamp.joeckr.dev/oidc-callback`
+   - **Post Logout Redirect URI**: `https://headlamp.joeckr.dev`
+   - **Token Settings**: enable **User Info inside ID Token** and **User roles inside ID Token**.
+4. **Kubernetes API Server Structured Authentication (`KubeAuthenticationConfig`)**:
+   - Configure your Talos control plane (`KubeAuthenticationConfig`) to trust your Zitadel issuer and map `sub` + `groups` with the `oidc:` prefix (preserving anonymous health probes):
+     ```yaml
+     apiVersion: v1alpha1
+     kind: KubeAuthenticationConfig
+     configuration:
+       anonymous:
+         enabled: true
+         conditions:
+           - path: /livez
+           - path: /readyz
+           - path: /healthz
+       jwt:
+         - issuer:
+             url: https://<your-zitadel-domain>
+             audiences:
+               - "<ZITADEL_CLIENT_ID>"
+           claimMappings:
+             username:
+               claim: sub
+               prefix: "oidc:"
+             groups:
+               claim: groups
+               prefix: "oidc:"
+     ```
+
+### 3. Traefik Gateway & Cloudflare Tunnel
+
+1. **Traefik Gateway**: Confirm your Traefik `Gateway` resource exists (default: `traefik-gateway` in namespace `gateway`, listener `web`) and its listener `allowedRoutes.namespaces.from` permits routes from the `headlamp` namespace (`All` or matching `Selector`).
+2. **Cloudflare Tunnel**: Add a public hostname route in your Cloudflare Tunnel pointing `headlamp.joeckr.dev` to your Traefik Gateway service.
+3. **Cloudflare WAF / Bot Protection**: Headlamp and `kube-apiserver` make server-to-server HTTPS calls to Zitadel (`/oauth/v2/token`, `/oauth/v2/keys`, `/.well-known/openid-configuration`). In Cloudflare for your Zitadel hostname, add a **Custom Skip Rule** for `starts_with(http.request.uri.path, "/oauth/v2/") or starts_with(http.request.uri.path, "/.well-known/")` (and disable free-tier **Bot Fight Mode** under **Security → Settings** if it challenges backend requests).
+4. Because `oidc.callbackURL` is explicitly set to `https://headlamp.joeckr.dev/oidc-callback`, Headlamp will always send the HTTPS callback URI to Zitadel even when TLS is terminated at Cloudflare/Traefik.
+
+### 4. Longhorn StorageClass
+
+Ensure the `longhorn` `StorageClass` is installed (or override `persistence.storageClassName`). Because Longhorn `ReadWriteOnce` volumes cannot attach to two pods simultaneously, the `Deployment` automatically uses `strategy.type: Recreate` when `persistence.enabled: true`.
+
+---
+
+## Installing with Helm (Without Committing Secrets)
+
+Never commit Zitadel OIDC credentials to this repository. Choose one of the three patterns below at install time:
+
+### Option A: Pass Secrets via `--set` Flags
+
+```sh
+helm upgrade --install lab-headlamp chart/ \
+  --namespace headlamp \
+  --create-namespace \
+  --set oidc.issuerURL="https://auth.joeckr.dev" \
+  --set oidc.clientID="<ZITADEL_CLIENT_ID>" \
+  --set oidc.clientSecret="<ZITADEL_CLIENT_SECRET>"
+```
+
+*(Omit `--set oidc.clientSecret=...` if using a PKCE public client in Zitadel.)*
+
+### Option B: Use an Untracked `values.local.yaml`
+
+`values.local.yaml` is listed in `.gitignore`. Create it locally:
+
+```yaml
+oidc:
+  issuerURL: "https://auth.joeckr.dev"
+  clientID: "<ZITADEL_CLIENT_ID>"
+  clientSecret: "<ZITADEL_CLIENT_SECRET>"
+
+# Optional: grant a Zitadel OIDC group cluster-admin access
+rbac:
+  oidcBindings:
+    - name: headlamp-oidc-admins
+      clusterRoleName: cluster-admin
+      subjects:
+        - kind: Group
+          name: "oidc:k8s-admins"
+```
+
+Then install:
+
+```sh
+helm upgrade --install lab-headlamp chart/ \
+  --namespace headlamp \
+  --create-namespace \
+  -f values.local.yaml
+```
+
+### Option C: Use a Pre-Existing Kubernetes Secret
+
+Create the secret out-of-band (or via External Secrets Operator / SOPS):
+
+```sh
+kubectl -n headlamp create secret generic headlamp-oidc \
+  --from-literal=clientID="<ZITADEL_CLIENT_ID>" \
+  --from-literal=clientSecret="<ZITADEL_CLIENT_SECRET>"
+```
+
+Then install referencing it:
+
+```sh
+helm upgrade --install lab-headlamp chart/ \
+  --namespace headlamp \
+  --create-namespace \
+  --set oidc.issuerURL="https://auth.joeckr.dev" \
+  --set oidc.existingSecret="headlamp-oidc"
+```
+
+---
+
+## Testing & Validation
+
+### Tier 1: Local Container (`compose.yml`)
+
+```sh
 mise run compose
-# or: podman compose up -d
-
-# View container logs
 mise run logs
-# or: podman compose logs -f
-
-# Verify connectivity
-curl http://localhost:8080
-
-# Stop container
+curl -I http://localhost:4466/
 mise run down
-# or: podman compose down
 ```
 
-**What this verifies:**
-- Unprivileged user execution without host root privileges.
-- Unprivileged port binding on port `8080`.
-- Health check verification and local volume mount handling.
+### Tier 2: Local Kubernetes Manifests (`mise run play`)
 
----
-
-### Tier 2: Local Kubernetes Manifest Testing (`mise run play`)
-
-Before deploying to an actual Kubernetes cluster, you can test the rendered Kubernetes manifests locally using Podman's built-in `play kube` feature.
-
-```sh
-# Render templates and play Kubernetes manifests locally
-mise run play
-
-# Teardown the played pod and resources
-mise run play-d
-```
-
-**How `mise run play` works:**
-1. Triggers the dependent task `mise run helm-t`, which executes:
-   ```sh
-   helm dependency build chart/
-   helm template test chart/ > rendered.yaml
-   ```
-2. Executes `podman play kube rendered.yaml --publish-all`, which:
-   - Reads the multi-document Kubernetes YAML (`Deployment`, `Service`).
-   - Creates a local Podman pod matching the Kubernetes `Deployment` specification.
-   - Applies the pod's `securityContext` (`runAsNonRoot: true`, capabilities drop, seccomp profile).
-   - Exposes container port `8080`.
-
-**Inspecting the local play deployment:**
-```sh
-# View running pods created by play kube
-podman pod ps
-
-# View container status within the pod
-podman ps --filter "pod=lab-service"
-
-# Verify service response
-curl http://localhost:8080
-
-# Check container logs within the pod
-podman logs -f lab-service-pod-lab-service
-```
-
-**Teardown:**
-```sh
-mise run play-d
-# or: podman play kube rendered.yaml --down
-```
-
----
-
-### Tier 3: Cluster Deployment & Testing on Kubernetes (`mise run helm-i`)
-
-The final phase validates the workload on a live Kubernetes cluster. This tests real-world Pod Security Admission (PSA) enforcement, network routing, and container startup under production constraints.
-
-#### 1. Cluster Prerequisites & Configuration
-
-Ensure your `kubectl` context points to your Kubernetes cluster:
-```sh
-kubectl config current-context
-```
-
-Verify that the target namespace enforces the `restricted` Pod Security Standard:
-```sh
-kubectl get ns default --show-labels
-# Should include:
-# pod-security.kubernetes.io/enforce=restricted
-# pod-security.kubernetes.io/enforce-version=latest
-```
-
-#### 2. Linting & Template Validation
-
-Run the linter and inspect the generated manifests before cluster deployment:
 ```sh
 mise run helm-l
-mise run helm-t
-
+mise run play
+# Verify locally, then tear down:
+mise run play-d
 ```
 
-#### 3. Deploying to the Cluster
-
-Install the Helm chart release:
-```sh
-mise run helm-i
-# or: helm install test chart/
-```
-
-#### 4. Verifying PSS Compliance & Health
-
-Check the pod status and verify that Kubernetes Pod Security Admission (PSA) allowed the pod to run:
+### Tier 3: Cluster Verification
 
 ```sh
-# Check pod deployment status
-kubectl get pods -l app=lab-service
+# Check pod health and Restricted PSS admission
+kubectl -n headlamp get pods,pvc,httproute
+kubectl -n headlamp describe pod -l app.kubernetes.io/name=headlamp
+kubectl -n headlamp logs -l app.kubernetes.io/name=headlamp -f
 
-# Inspect pod details and events for security policy rejections
-kubectl describe pod -l app=lab-service
-```
-
-> [!TIP]
-> If your namespace enforces the `restricted` Pod Security Standard and there are non-compliant settings (such as missing `runAsNonRoot` or un-dropped capabilities), `kubectl describe pod` will show warning events from the `pod-security` admission controller.
-
-Check the application logs:
-```sh
-kubectl logs -l app=lab-service -f
-```
-
-Verify service access via port-forwarding:
-```sh
-# Forward port 8080 from the cluster pod
-kubectl port-forward svc/lab-service 8080:8080
-
-# In a separate shell, test HTTP response
-curl http://localhost:8080
-```
-
-#### 5. Uninstalling from the Cluster
-
-When testing is complete, clean up the release:
-```sh
-mise run helm-u
-# or: helm uninstall test
+# Verify Gateway attachment
+kubectl -n headlamp describe httproute headlamp
 ```
 
 ---
 
 ## Local Development & Tasks
 
-### Setup
-
-```bash
+```sh
 # Install tools and git hooks
 mise run install
+
+# Run all linters and hook checks
+mise run hk
 ```
 
-### Available Tasks
-
-Run tasks with `mise run <task>`:
-
-| Task | Description | Command |
-|---|---|---|
-| `install` | Install tools and set up git hooks | `hk install --mise` |
-| `hk` (or `check`) | Run all linters and hook checks | `hk check --all` |
-| `compose` | Start local container stack with Podman Compose | `podman compose up -d` |
-| `down` | Stop local Podman Compose stack | `podman compose down` |
-| `logs` | View Podman Compose logs | `podman compose logs -f` |
-| `play` | Test Helm chart manifests locally with Podman Play Kube | `podman play kube rendered.yaml --publish-all` |
-| `play-d` | Stop and remove Podman Play Kube pods | `podman play kube rendered.yaml --down` |
-| `helm-d` | Build Helm chart dependencies | `helm dependency build chart/` |
-| `helm-l` | Lint Helm chart | `helm lint chart/` |
-| `helm-t` | Render Helm chart templates to `rendered.yaml` | `helm template test chart/ > rendered.yaml` |
-| `helm-i` | Install Helm chart to current Kubernetes cluster | `helm install test chart/` |
-| `helm-u` | Uninstall Helm chart release from cluster | `helm uninstall test` |
-| `trivy-fs` | Scan repository filesystem for security vulnerabilities | `trivy fs .` |
+| Task | Description |
+|---|---|
+| `install` | Install tools and set up git hooks (`hk install --mise`) |
+| `hk` / `check` | Run all linters, secret scans, and Helm lint (`hk check --all`) |
+| `compose` | Start Headlamp locally via Podman Compose |
+| `down` | Stop local Podman Compose stack |
+| `logs` | Tail Podman Compose logs |
+| `helm-l` | Lint the Helm chart (`helm lint chart/`) |
+| `helm-t` | Render templates to `rendered.yaml` |
+| `helm-i` | Install/upgrade the chart into the `headlamp` namespace |
+| `helm-u` | Uninstall the chart from the `headlamp` namespace |
+| `play` / `play-d` | Test rendered manifests locally with `podman play kube` |
+| `trivy-fs` | Scan the repository filesystem with Trivy |
 
 ---
 
 ## Conventional Commits & Releases
 
-Commits must follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
-- `feat: add new feature` -> Triggers a **minor** release (e.g., `v0.1.0` -> `v0.2.0`).
-- `fix: resolve issue` -> Triggers a **patch** release (e.g., `v0.1.0` -> `v0.1.1`).
-- `feat!: breaking change` -> Triggers a **major** release.
-- `chore:`, `docs:`, `ci:`, `test:`, `refactor:` -> Maintenance changes (no release bump).
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
+- `feat:` -> minor release
+- `fix:` -> patch release
+- `feat!:` -> major release
+- `chore:`, `docs:`, `ci:`, `refactor:` -> no release bump
 
-Upon merging to `main`, the `release.yml` workflow automatically computes the next version, updates `version` and `appVersion` in `chart/Chart.yaml`, creates a Git tag, publishes a GitHub Release, and packages and pushes the Helm chart to GHCR.
-
-## Support
-
-If you find this project useful, consider supporting my work on [Ko-fi](https://ko-fi.com/joeckr):
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/joeckr)
+Merging to `main` triggers `release.yml`, which bumps `chart/Chart.yaml`, tags the release, and publishes the OCI Helm chart to GHCR.
 
 ## License
 
-Please refer to the `LICENSE` file for details.
+See [LICENSE](LICENSE) for details.

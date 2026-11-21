@@ -18,7 +18,7 @@ hk install --mise
 """
 
 [tasks.compose]
-description = "Run Podman Compose for local lab"
+description = "Run Podman Compose for local Headlamp testing"
 run = """
 podman compose up -d
 """
@@ -37,7 +37,7 @@ podman play kube rendered.yaml --publish-all
 """
 
 [tasks.play-d]
-description = "Run Podman Play for local helm chart testing"
+description = "Stop Podman Play local helm chart deployment"
 depends = ["helm-d"]
 run = """
 podman play kube rendered.yaml --down
@@ -67,20 +67,20 @@ helm lint chart/
 description = "Render Helm chart templates"
 depends = ["helm-d"]
 run = """
-helm template test chart/ > rendered.yaml
+helm template lab-headlamp chart/ > rendered.yaml
 """
 
 [tasks.helm-i]
-description = "Install Helm chart"
+description = "Install or upgrade Headlamp Helm chart (pass OIDC values via -f values.local.yaml or --set)"
 depends = ["helm-d"]
 run = """
-helm install test chart/
+helm upgrade --install lab-headlamp chart/ --namespace headlamp --create-namespace
 """
 
 [tasks.helm-u]
-description = "Uninstall Helm chart"
+description = "Uninstall Headlamp Helm chart"
 run = """
-helm uninstall test
+helm uninstall lab-headlamp --namespace headlamp
 """
 
 [tasks.helm-d]
