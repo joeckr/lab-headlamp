@@ -34,8 +34,8 @@ spec:
       {{- end }}
       containers:
         - name: {{ include "lab-headlamp.name" . }}
-          image: "{{ .Values.app.image }}:{{ .Values.app.tag }}"
-          imagePullPolicy: {{ .Values.app.pullPolicy }}
+          image: "{{ .Values.app.image.repository }}:{{ .Values.app.image.tag }}"
+          imagePullPolicy: {{ .Values.app.image.pullPolicy }}
           {{- with .Values.app.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}

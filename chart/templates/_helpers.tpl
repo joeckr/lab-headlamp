@@ -10,7 +10,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "lab-headlamp.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{ include "lab-headlamp.selectorLabels" . }}
-app.kubernetes.io/version: {{ .Values.app.tag | quote }}
+app.kubernetes.io/version: {{ .Values.app.image.tag | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
