@@ -17,9 +17,14 @@ spec:
     metadata:
       labels:
         {{- include "lab-headlamp.selectorLabels" . | nindent 8 }}
-      {{- if and .Values.oidc.enabled (not .Values.oidc.existingSecret) }}
+      {{- if or (and .Values.oidc.enabled .Values.oidc.secretCreate (not .Values.oidc.existingSecret)) .Values.app.podAnnotations }}
       annotations:
+        {{- if and .Values.oidc.enabled .Values.oidc.secretCreate (not .Values.oidc.existingSecret) }}
         checksum/oidc-secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.app.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "lab-headlamp.serviceAccountName" . }}
